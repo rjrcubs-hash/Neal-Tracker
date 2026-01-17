@@ -1,15 +1,18 @@
 import tweepy
 import requests
 import time
+import os
+import json
 from datetime import datetime
 import pytz  # For accurate ET time; pip install pytz if not present
 
-# === Your X API credentials ===
+# === Your X API credentials from environment variables ===
 consumer_key = os.environ.get('TWITTER_CONSUMER_KEY')
 consumer_secret = os.environ.get('TWITTER_CONSUMER_SECRET')
 access_token = os.environ.get('TWITTER_ACCESS_TOKEN')
 access_token_secret = os.environ.get('TWITTER_ACCESS_SECRET')
 LIVEGOLF_API_KEY = os.environ.get('LIVEGOLF_API_KEY')
+
 client = tweepy.Client(
     consumer_key=consumer_key,
     consumer_secret=consumer_secret,
@@ -19,14 +22,26 @@ client = tweepy.Client(
 
 # === Customize ===
 GOLFER_FULL_NAME = "Neal Shipley"
-LIVEGOLF_API_KEY = "0f018d10816e47a297649c2af35932a2"
 CHECK_INTERVAL_MINUTES = 5
 TEST_MODE = False  # <--- Set to True for testing (prints instead of tweeting)
                   # Set to False when ready to post real tweets
 
-last_known_status = None
+STATE_FILE = 'last_status.json'
 BASE_LIVEGOLF = "https://use.livegolfapi.com/v1"
 BASE_ESPN = "http://site.api.espn.com/apis/site/v2/sports/golf/leaderboard"
+
+def load_last_status():
+    """Load last known status from file (persisted via git)."""
+    try:
+        with open(STATE_FILE, 'r') as f:
+            return json.load(f).get('last_status')
+    except FileNotFoundError:
+        return None
+
+def save_last_status(status):
+    """Save current status to file."""
+    with open(STATE_FILE, 'w') as f:
+        json.dump({'last_status': status}, f)
 
 def get_active_pga_event():
     """Use livegolfapi to find current PGA event ID/name/status."""
@@ -124,39 +139,40 @@ def get_golfer_update_from_espn(tournament_name):
 print("PGA Golfer Bot (livegolfapi for events + ESPN for scores) starting...")
 print(f"TEST_MODE = {TEST_MODE} → {'Will ONLY PRINT (no tweets)' if TEST_MODE else 'Will POST real tweets!'}")
 
-while True:
-    et_now = datetime.now(pytz.timezone('America/New_York'))
-    hour = et_now.hour
-    
-    if 6 <= hour <= 22:  # Reasonable golf hours ET
-        active_event = get_active_pga_event()
-        if active_event:
-            print(f"[{et_now.strftime('%Y-%m-%d %H:%M:%S ET')}] Active event: {active_event['name']} ({active_event['status']})")
-            
-            update_text, error = get_golfer_update_from_espn(active_event['name'])
-            
-            if error:
-                print(f"  Error: {error}")
-            elif update_text and update_text != last_known_status:
-                try:
-                    if TEST_MODE:
-                        print(f"  WOULD TWEET: {update_text}")
-                    else:
-                        response = client.create_tweet(text=update_text[:280])
-                        print(f"  TWEETED: {update_text}")
-                        print(f"  Link: https://x.com/i/status/{response.data['id']}")
-                    
-                    last_known_status = update_text
-                except tweepy.TweepyException as e:
-                    print(f"  Tweet error: {e}")
-                    if "429" in str(e):
-                        print("  Rate limit hit – sleeping 15 min")
-                        time.sleep(900)
-        else:
-            print(f"[{et_now.strftime('%H:%M ET')}] No active PGA event detected.")
-    
-    else:
-        print(f"[{et_now.strftime('%H:%M ET')}] Outside golf hours – sleeping...")
-    
+# Load previous status to avoid duplicate tweets
+last_known_status = load_last_status()
 
-    time.sleep(CHECK_INTERVAL_MINUTES * 60)
+et_now = datetime.now(pytz.timezone('America/New_York'))
+hour = et_now.hour
+
+if 6 <= hour <= 22:  # Reasonable golf hours ET
+    active_event = get_active_pga_event()
+    if active_event:
+        print(f"[{et_now.strftime('%Y-%m-%d %H:%M:%S ET')}] Active event: {active_event['name']} ({active_event['status']})")
+        
+        update_text, error = get_golfer_update_from_espn(active_event['name'])
+        
+        if error:
+            print(f"  Error: {error}")
+        elif update_text and update_text != last_known_status:
+            try:
+                if TEST_MODE:
+                    print(f"  WOULD TWEET: {update_text}")
+                else:
+                    response = client.create_tweet(text=update_text[:280])
+                    print(f"  TWEETED: {update_text}")
+                    print(f"  Link: https://x.com/i/status/{response.data['id']}")
+                
+                # Save the new status
+                save_last_status(update_text)
+                
+            except tweepy.TweepyException as e:
+                print(f"  Tweet error: {e}")
+        elif update_text == last_known_status:
+            print(f"  Status unchanged - no tweet needed")
+    else:
+        print(f"[{et_now.strftime('%H:%M ET')}] No active PGA event detected.")
+else:
+    print(f"[{et_now.strftime('%H:%M ET')}] Outside golf hours – skipping check.")
+
+print("Bot run complete.")
