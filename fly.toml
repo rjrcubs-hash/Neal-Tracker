@@ -1,0 +1,14 @@
+app = "neal-shipley-bot"  # Change to a unique name (letters, numbers, dashes only)
+primary_region = "iad"    # Closest to Jacksonville, FL (Washington DC area); change if needed (e.g., "atl" for Atlanta)
+
+[build]
+builder = "paketobuildpacks/builder:base"
+buildpacks = ["gcr.io/paketo-buildpacks/python"]
+
+[env]
+PYTHONUNBUFFERED = "1"   # Makes logs appear in real-time
+
+[processes]
+worker = "python pga_bot2.py"  # This runs your script as the main process
+
+# No [http_service] section needed — your bot isn't a web app
