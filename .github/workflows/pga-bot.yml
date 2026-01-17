@@ -1,0 +1,32 @@
+name: PGA Neal Shipley Bot
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'  # Every 5 minutes (matches your CHECK_INTERVAL_MINUTES)
+  workflow_dispatch:  # Allows manual runs from Actions tab
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+    
+    - name: Run PGA bot
+      env:
+        TWITTER_CONSUMER_KEY: ${{ secrets.TWITTER_CONSUMER_KEY }}
+        TWITTER_CONSUMER_SECRET: ${{ secrets.TWITTER_CONSUMER_SECRET }}
+        TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
+        TWITTER_ACCESS_SECRET: ${{ secrets.TWITTER_ACCESS_SECRET }}
+        LIVEGOLF_API_KEY: ${{ secrets.LIVEGOLF_API_KEY }}
+      run: python pga_bot2.py
