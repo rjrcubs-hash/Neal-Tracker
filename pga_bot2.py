@@ -5,11 +5,11 @@ from datetime import datetime
 import pytz  # For accurate ET time; pip install pytz if not present
 
 # === Your X API credentials ===
-consumer_key = "pkUgyDMaEXQazGad03phlim8f"
-consumer_secret = "mMIXNq32nqJB9Xuo4eYLpuXn20L2CxPSlRD2DiQywBUmRaUO6j"
-access_token = "2012575649173536769-MqgMlv68svz30NQd1QNCLuyfDXZC2l"
-access_token_secret = "movOjuXgiV8USjWinxEpsM9So6aI7DY6cFdtXMos6n8aH"
-
+consumer_key = os.environ.get('TWITTER_CONSUMER_KEY')
+consumer_secret = os.environ.get('TWITTER_CONSUMER_SECRET')
+access_token = os.environ.get('TWITTER_ACCESS_TOKEN')
+access_token_secret = os.environ.get('TWITTER_ACCESS_SECRET')
+LIVEGOLF_API_KEY = os.environ.get('LIVEGOLF_API_KEY')
 client = tweepy.Client(
     consumer_key=consumer_key,
     consumer_secret=consumer_secret,
@@ -158,4 +158,5 @@ while True:
     else:
         print(f"[{et_now.strftime('%H:%M ET')}] Outside golf hours – sleeping...")
     
+
     time.sleep(CHECK_INTERVAL_MINUTES * 60)
