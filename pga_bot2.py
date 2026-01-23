@@ -22,7 +22,7 @@ client = tweepy.Client(
 
 # === Customize ===
 GOLFER_FULL_NAME = "Neal Shipley"
-TEST_MODE = False  # Set to True for testing (prints instead of tweeting)
+TEST_MODE = True  # Set to True for testing (prints instead of tweeting)
 
 STATE_FILE = 'last_status.json'
 BASE_LIVEGOLF = "https://use.livegolfapi.com/v1"
@@ -294,3 +294,4 @@ else:
     print(f"[{et_now.strftime('%H:%M ET')}] Outside golf hours – skipping check.")
 
 print("Bot run complete.")
+
