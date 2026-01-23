@@ -22,7 +22,7 @@ client = tweepy.Client(
 
 # === Customize ===
 GOLFER_FULL_NAME = "Neal Shipley"
-TEST_MODE = False  # Set to False when ready to post real tweets
+TEST_MODE = True  # Set to False when ready to post real tweets
 
 STATE_FILE = 'last_status.json'
 BASE_LIVEGOLF = "https://use.livegolfapi.com/v1"
@@ -189,8 +189,9 @@ def get_golfer_update_from_espn(tournament_name):
                 # Get tee time if available
                 tee_time = status_obj.get('displayValue', '')  # Often shows tee time like "10:30 AM"
                 
-                print(f"  DEBUG - Position: {position}, Thru: {thru}, Period: {period}, Today: {today_score}, Total: {total_score}")
-                print(f"  DEBUG - Tee time/status: {tee_time}, Day: {day_of_week}")
+                print(f"  DEBUG - Position: '{position}', Thru: '{thru}', Period: {period}, Today: {today_score}, Total: {total_score}")
+                print(f"  DEBUG - Tee time/status: '{tee_time}', Day: {day_of_week} (0=Mon, 3=Thu, 4=Fri, 5=Sat, 6=Sun)")
+                print(f"  DEBUG - Linescores available: {len(linescores) if linescores else 0}")
                 
                 # SCENARIO 1: Actively playing (has position, has thru holes, thru is not "F")
                 if position and thru and thru != 'F' and thru.isdigit():
@@ -271,6 +272,9 @@ if 6 <= hour <= 22:  # Reasonable golf hours ET
         if error:
             print(f"  Error: {error}")
         elif tweet_text:
+            print(f"  Generated tweet: {tweet_text}")
+            print(f"  Last known status: {last_known_status}")
+            
             # Only tweet if status has changed
             if tweet_text != last_known_status:
                 try:
@@ -287,10 +291,12 @@ if 6 <= hour <= 22:  # Reasonable golf hours ET
                     print(f"  Tweet error: {e}")
             else:
                 print(f"  Status unchanged - no tweet needed")
+                print(f"  Tweet would be: {tweet_text}")
+        else:
+            print(f"  No tweet generated - tweet_text is None or empty")
     else:
         print(f"[{et_now.strftime('%H:%M ET')}] No active PGA event detected.")
 else:
     print(f"[{et_now.strftime('%H:%M ET')}] Outside golf hours – skipping check.")
 
 print("Bot run complete.")
-
