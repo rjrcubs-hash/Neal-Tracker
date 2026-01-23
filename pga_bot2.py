@@ -51,24 +51,47 @@ def generate_active_play_tweet(tournament_info):
     hole = tournament_info['hole']
     round_num = tournament_info['round']
     
-    # 15 different templates for active play
-    templates = [
-        f"Neal Shipley is {today_score} today ({total_score} overall) through {hole} holes. Currently {position} at the {tournament}.",
-        f"{today_score} through {hole} for Neal Shipley at the {tournament}. Sits {position} at {total_score} overall.",
-        f"Neal Shipley: {today_score} today, {total_score} total. {position} through {hole} holes at the {tournament}.",
-        f"Through {hole}: Neal Shipley {today_score} in Round {round_num}. {position} overall ({total_score}) at the {tournament}.",
-        f"Neal Shipley {position} at the {tournament}. {today_score} today through {hole}, {total_score} overall.",
-        f"Round {round_num} update: Neal Shipley {today_score} through {hole} holes. {position} at {total_score} overall. {tournament}.",
-        f"{position} at the {tournament} for Neal Shipley. {today_score} today through {hole}, {total_score} for the tournament.",
-        f"Neal Shipley through {hole} holes: {today_score} today, {total_score} overall, {position} at the {tournament}.",
-        f"Currently {position}: Neal Shipley is {today_score} through {hole} holes today ({total_score} total) at the {tournament}.",
-        f"{tournament} update: Neal Shipley {today_score} through {hole} in Round {round_num}. {position}, {total_score} overall.",
-        f"Neal Shipley sits {position} at the {tournament} after {hole} holes. {today_score} today, {total_score} for the week.",
-        f"Through {hole} today: Neal Shipley {today_score} in Round {round_num}. Overall: {total_score}, {position} at the {tournament}.",
-        f"{position} and counting. Neal Shipley {today_score} through {hole} today, {total_score} total at the {tournament}.",
-        f"Neal Shipley {today_score} today through {hole} holes at the {tournament}. {position} overall at {total_score}.",
-        f"Round {round_num}: Neal Shipley through {hole} at {today_score} today. {position} ({total_score} overall) at the {tournament}.",
-    ]
+    # Check if we have a real position or placeholder
+    has_position = position and position != "in the field"
+    
+    if has_position:
+        # 15 different templates WITH position
+        templates = [
+            f"Neal Shipley is {today_score} today ({total_score} overall) through {hole} holes. Currently {position} at the {tournament}.",
+            f"{today_score} through {hole} for Neal Shipley at the {tournament}. Sits {position} at {total_score} overall.",
+            f"Neal Shipley: {today_score} today, {total_score} total. {position} through {hole} holes at the {tournament}.",
+            f"Through {hole}: Neal Shipley {today_score} in Round {round_num}. {position} overall ({total_score}) at the {tournament}.",
+            f"Neal Shipley {position} at the {tournament}. {today_score} today through {hole}, {total_score} overall.",
+            f"Round {round_num} update: Neal Shipley {today_score} through {hole} holes. {position} at {total_score} overall. {tournament}.",
+            f"{position} at the {tournament} for Neal Shipley. {today_score} today through {hole}, {total_score} for the tournament.",
+            f"Neal Shipley through {hole} holes: {today_score} today, {total_score} overall, {position} at the {tournament}.",
+            f"Currently {position}: Neal Shipley is {today_score} through {hole} holes today ({total_score} total) at the {tournament}.",
+            f"{tournament} update: Neal Shipley {today_score} through {hole} in Round {round_num}. {position}, {total_score} overall.",
+            f"Neal Shipley sits {position} at the {tournament} after {hole} holes. {today_score} today, {total_score} for the week.",
+            f"Through {hole} today: Neal Shipley {today_score} in Round {round_num}. Overall: {total_score}, {position} at the {tournament}.",
+            f"{position} and counting. Neal Shipley {today_score} through {hole} today, {total_score} total at the {tournament}.",
+            f"Neal Shipley {today_score} today through {hole} holes at the {tournament}. {position} overall at {total_score}.",
+            f"Round {round_num}: Neal Shipley through {hole} at {today_score} today. {position} ({total_score} overall) at the {tournament}.",
+        ]
+    else:
+        # 15 different templates WITHOUT position (when position data unavailable)
+        templates = [
+            f"Neal Shipley is {today_score} today ({total_score} overall) through {hole} holes at the {tournament}.",
+            f"{today_score} through {hole} for Neal Shipley at the {tournament}. {total_score} overall.",
+            f"Neal Shipley: {today_score} today, {total_score} total through {hole} holes at the {tournament}.",
+            f"Through {hole}: Neal Shipley {today_score} in Round {round_num}. {total_score} overall at the {tournament}.",
+            f"Neal Shipley {today_score} today through {hole}, {total_score} overall at the {tournament}.",
+            f"Round {round_num} update: Neal Shipley {today_score} through {hole} holes. {total_score} overall at the {tournament}.",
+            f"Neal Shipley through {hole} holes at the {tournament}. {today_score} today, {total_score} for the tournament.",
+            f"Neal Shipley {today_score} through {hole} holes today. {total_score} overall at the {tournament}.",
+            f"Through {hole} holes: Neal Shipley is {today_score} today ({total_score} total) at the {tournament}.",
+            f"{tournament} Round {round_num}: Neal Shipley {today_score} through {hole}. {total_score} overall.",
+            f"Neal Shipley at the {tournament}: {today_score} today through {hole} holes, {total_score} for the week.",
+            f"Through {hole} today: Neal Shipley {today_score} in Round {round_num}. Overall: {total_score} at the {tournament}.",
+            f"Neal Shipley {today_score} through {hole} today, {total_score} total at the {tournament}.",
+            f"Neal Shipley {today_score} today through {hole} holes at the {tournament}. {total_score} overall.",
+            f"Round {round_num}: Neal Shipley through {hole} at {today_score} today. {total_score} overall at the {tournament}.",
+        ]
     
     return random.choice(templates)
 
@@ -176,7 +199,8 @@ def get_golfer_update_from_espn(tournament_name):
                 
                 # Get status info
                 status_obj = player.get('status', {})
-                thru = status_obj.get('thru', '')  # Holes completed or "F" for finished
+                thru_raw = status_obj.get('thru', '')  # Holes completed or "F" for finished
+                thru = str(thru_raw) if thru_raw else ''  # Convert to string for consistency
                 period = status_obj.get('period', 1)  # Current round number
                 
                 # Get today's round score (if available in linescores)
@@ -193,13 +217,17 @@ def get_golfer_update_from_espn(tournament_name):
                 print(f"  DEBUG - Tee time/status: '{tee_time}', Day: {day_of_week} (0=Mon, 3=Thu, 4=Fri, 5=Sat, 6=Sun)")
                 print(f"  DEBUG - Linescores available: {len(linescores) if linescores else 0}")
                 
-                # SCENARIO 1: Actively playing (has position, has thru holes, thru is not "F")
-                if position and thru and thru != 'F' and thru.isdigit():
+                # SCENARIO 1: Actively playing (has thru holes, thru is not "F")
+                # Position might be temporarily missing during live play
+                if thru and thru != 'F' and thru.isdigit():
+                    # Use position if available, otherwise use a placeholder
+                    display_position = position if position else "in the field"
+                    
                     tournament_info = {
                         'tournament_name': tournament_name,
                         'today_score': today_score,
                         'total_score': total_score,
-                        'position': position,
+                        'position': display_position,
                         'hole': thru,
                         'round': period,
                         'status': 'playing'
@@ -300,4 +328,3 @@ else:
     print(f"[{et_now.strftime('%H:%M ET')}] Outside golf hours – skipping check.")
 
 print("Bot run complete.")
-
