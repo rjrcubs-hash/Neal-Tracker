@@ -22,7 +22,7 @@ client = tweepy.Client(
 
 # === Customize ===
 GOLFER_FULL_NAME = "Neal Shipley"
-TEST_MODE = False  # Set to False when ready to post real tweets
+TEST_MODE = True  # Set to False when ready to post real tweets
 
 STATE_FILE = 'last_status.json'
 BASE_LIVEGOLF = "https://use.livegolfapi.com/v1"
@@ -414,7 +414,7 @@ def get_active_pga_event():
         return None
 
 def get_golfer_update_from_espn(tournament_name):
-    """Fetch golfer status from ESPN leaderboard with proper data parsing."""
+    """Fetch golfer status from ESPN leaderboard with accurate time-based state detection."""
     try:
         response = requests.get(BASE_ESPN, timeout=10)
         response.raise_for_status()
@@ -467,42 +467,36 @@ def get_golfer_update_from_espn(tournament_name):
                 # Get tee time if available
                 tee_time = status_obj.get('displayValue', '')  # Often shows tee time like "10:30 AM"
                 
-                # Determine if round is currently LIVE or finished from a previous day
-                # Key insight: If thru == 'F' before typical start times, it's yesterday's round
-                # Golf rounds typically start 7 AM - 2 PM and finish 2 PM - 7 PM ET
+                # === CRITICAL: Determine actual round state based on time and data ===
                 round_is_live = False
                 round_finished_today = False
-                waiting_for_tee_time = False
+                round_finished_previous_day = False
                 
-                if thru and thru.isdigit():
-                    # Player has completed some holes - this is LIVE action
+                # Check if round is complete (either 'F' or '18')
+                round_is_complete = (thru == 'F' or thru == '18')
+                
+                if thru and thru.isdigit() and int(thru) < 18:
+                    # Player has completed some holes (1-17) - this is LIVE action
                     round_is_live = True
-                elif thru == 'F':
-                    # Round is complete - but is it from today or yesterday?
-                    # If it's early morning (before 11 AM), likely yesterday's finished round
-                    # If it's afternoon/evening (after 2 PM), could be today's finished round
+                elif round_is_complete:
+                    # Round is complete - but is it from today or a previous day?
+                    # Before 1 PM = almost certainly previous day's round
+                    # After 2 PM = could be today's finished round
                     if current_hour >= 14:  # After 2 PM - reasonable that they finished today
                         round_finished_today = True
-                    elif current_hour < 11:  # Before 11 AM - likely yesterday's round
-                        # Check if they have a tee time for today
-                        if tee_time and any(char.isdigit() for char in tee_time):
-                            waiting_for_tee_time = True
-                        else:
-                            # No tee time shown and it's morning - might be waiting or cut
-                            pass
-                    else:  # Between 11 AM - 2 PM - ambiguous, need to be careful
-                        # Could be finishing up or waiting
-                        if tee_time and any(char.isdigit() for char in tee_time):
-                            waiting_for_tee_time = True
+                    elif current_hour < 13:  # Before 1 PM - almost certainly previous day's round
+                        round_finished_previous_day = True
+                    else:  # Between 1 PM - 2 PM - ambiguous, lean toward previous day
+                        round_finished_previous_day = True
                 
                 print(f"  DEBUG - Position: '{position}', Thru: '{thru}', Period: {period}, Today: {today_score}, Total: {total_score}")
                 print(f"  DEBUG - Tee time/status: '{tee_time}', Day: {day_of_week} (0=Mon, 3=Thu, 4=Fri, 5=Sat, 6=Sun), Hour: {current_hour}")
                 print(f"  DEBUG - Linescores available: {len(linescores) if linescores else 0}")
-                print(f"  DEBUG - Round live: {round_is_live}, Finished today: {round_finished_today}, Waiting for tee: {waiting_for_tee_time}")
+                print(f"  DEBUG - Round complete: {round_is_complete}, Live: {round_is_live}, Finished today: {round_finished_today}, Finished previous day: {round_finished_previous_day}")
                 
-                # SCENARIO 1: Actively playing RIGHT NOW (has thru holes showing current progress)
+                # === SCENARIO 1: ACTIVELY PLAYING RIGHT NOW ===
+                # Player is on the course with holes 1-17 completed
                 if round_is_live:
-                    # Use position if available, otherwise use a placeholder
                     display_position = position if position else "in the field"
                     
                     tournament_info = {
@@ -517,16 +511,102 @@ def get_golfer_update_from_espn(tournament_name):
                     tweet = generate_active_play_tweet(tournament_info)
                     return tweet, None
                 
-                # SCENARIO 2: Has tee time showing - waiting to start round
-                elif waiting_for_tee_time or (tee_time and any(char.isdigit() for char in tee_time) and not round_finished_today and not round_is_live):
-                    # Determine what round they're about to play
-                    next_round = period
-                    
-                    # If they finished previous round (thru == 'F') and have a tee time for next round
-                    if thru == 'F':
+                # === SCENARIO 2: FINISHED PREVIOUS DAY - WAITING FOR TODAY ===
+                # Round complete from yesterday, waiting for today's round to start
+                elif round_finished_previous_day:
+                    # Check if they have a tee time posted for next round
+                    if tee_time and any(char.isdigit() for char in tee_time):
+                        # Has a tee time for today - tweet it!
                         next_round = period + 1
+                        display_position = position if position else "in the field"
+                        
+                        tournament_info = {
+                            'tournament_name': tournament_name,
+                            'total_score': total_score,
+                            'position': display_position,
+                            'tee_time': tee_time,
+                            'round': next_round,
+                            'status': 'upcoming_tee_time'
+                        }
+                        tweet = generate_tee_time_tweet(tournament_info)
+                        return tweet, None
+                    else:
+                        # No tee time posted yet - show current standing
+                        # This is common with weather delays, suspended play, or early morning
+                        next_round = period + 1
+                        display_position = position if position else "in the field"
+                        
+                        # Generate a status update tweet about current position
+                        if display_position != "in the field":
+                            base_tweets = [
+                                f"Neal Shipley sits {display_position} at {total_score} after {period} rounds at the {tournament_name}. Round {next_round} coming up.",
+                                f"After {period} rounds: Neal Shipley {display_position} at {total_score} at the {tournament_name}. Awaiting Round {next_round} tee time.",
+                                f"Neal Shipley {total_score} through {period} rounds at the {tournament_name}. Currently {display_position}.",
+                                f"Current standing: Neal Shipley {display_position}, {total_score} after {period} rounds at the {tournament_name}.",
+                                f"{display_position} at the {tournament_name}! Neal Shipley at {total_score} after {period} rounds. Round {next_round} ahead.",
+                            ]
+                        else:
+                            base_tweets = [
+                                f"Neal Shipley sits at {total_score} after {period} rounds at the {tournament_name}. Round {next_round} coming up.",
+                                f"After {period} rounds: Neal Shipley at {total_score} at the {tournament_name}. Round {next_round} awaits.",
+                                f"Neal Shipley {total_score} through {period} rounds at the {tournament_name}. Ready for Round {next_round}.",
+                                f"Current standing: Neal Shipley at {total_score} after {period} rounds. {tournament_name}.",
+                            ]
+                        
+                        commentary = get_fun_commentary(position, total_score, today_score, period)
+                        base_tweet = random.choice(base_tweets)
+                        
+                        if commentary and display_position != "in the field":
+                            tweet = f"{base_tweet} {commentary}"
+                        else:
+                            tweet = base_tweet
+                        
+                        return tweet, None
+                
+                # === SCENARIO 3: FINISHED ROUND TODAY ===
+                # Just completed their round today (after 2 PM)
+                elif round_finished_today:
+                    display_position = position if position else "in the field"
                     
-                    # For Round 1 (Thursday), total_score might be 'E' and position might be empty
+                    tournament_info = {
+                        'tournament_name': tournament_name,
+                        'today_score': today_score,
+                        'total_score': total_score,
+                        'position': display_position,
+                        'hole': '18',
+                        'round': period,
+                        'status': 'round_complete'
+                    }
+                    
+                    commentary = get_fun_commentary(position, total_score, today_score, period)
+                    
+                    if display_position != "in the field":
+                        base_tweet = f"Neal Shipley finishes Round {period} at {today_score} ({total_score} overall). {display_position} at the {tournament_name}."
+                    else:
+                        base_tweet = f"Neal Shipley finishes Round {period} at {today_score}. {total_score} overall at the {tournament_name}."
+                    
+                    if commentary:
+                        tweet = f"{base_tweet} {commentary}"
+                    else:
+                        tweet = base_tweet
+                    
+                    return tweet, None
+                
+                # === SCENARIO 4: MISSED CUT (Weekend with no data) ===
+                # It's Saturday/Sunday and they have no position or upcoming tee time
+                elif day_of_week in [5, 6] and not round_is_live and (not position or (not tee_time and round_is_complete)):
+                    tournament_info = {
+                        'tournament_name': tournament_name,
+                        'total_score': total_score,
+                        'status': 'missed_cut'
+                    }
+                    tweet = generate_missed_cut_tweet(tournament_info)
+                    return tweet, None
+                
+                # === SCENARIO 5: HAS TEE TIME FOR FRESH ROUND ===
+                # Starting a brand new round (not marked complete yet)
+                elif tee_time and any(char.isdigit() for char in tee_time) and not round_is_complete:
+                    next_round = period
                     display_total = total_score if total_score and total_score != 'E' else 'E'
                     display_position = position if position else "in the field"
                     
@@ -541,42 +621,9 @@ def get_golfer_update_from_espn(tournament_name):
                     tweet = generate_tee_time_tweet(tournament_info)
                     return tweet, None
                 
-                # SCENARIO 3: Finished a round TODAY (confirmed by time of day)
-                elif round_finished_today:
-                    # Finished the round today - announce completion
-                    tournament_info = {
-                        'tournament_name': tournament_name,
-                        'today_score': today_score,
-                        'total_score': total_score,
-                        'position': position if position else "in the field",
-                        'hole': '18',  # Finished
-                        'round': period,
-                        'status': 'round_complete'
-                    }
-                    
-                    commentary = get_fun_commentary(position, total_score, today_score, period)
-                    base_tweet = f"Neal Shipley finishes Round {period} at {today_score} ({total_score} overall). {position if position else 'Round complete'} at the {tournament_name}."
-                    
-                    if commentary:
-                        tweet = f"{base_tweet} {commentary}"
-                    else:
-                        tweet = base_tweet
-                    
-                    return tweet, None
-                
-                # SCENARIO 4: Sat/Sun with no position or tee time = missed cut
-                elif day_of_week in [5, 6] and not round_is_live and not waiting_for_tee_time and (not position or not tee_time or not any(char.isdigit() for char in tee_time)):
-                    tournament_info = {
-                        'tournament_name': tournament_name,
-                        'total_score': total_score,
-                        'status': 'missed_cut'
-                    }
-                    tweet = generate_missed_cut_tweet(tournament_info)
-                    return tweet, None
-                
-                # SCENARIO 5: In field but not started yet / waiting between rounds
+                # === SCENARIO 6: WAITING / UNCLEAR STATE ===
                 else:
-                    return None, f"{GOLFER_FULL_NAME} in field - finished previous round, waiting for next tee time (between rounds)."
+                    return None, f"{GOLFER_FULL_NAME} in field - status unclear (may be between rounds or waiting for tee time to be posted)."
         
         return None, f"{GOLFER_FULL_NAME} not found in current leaderboard."
     
@@ -584,8 +631,12 @@ def get_golfer_update_from_espn(tournament_name):
         return None, f"ESPN fetch error: {str(e)}"
 
 # === Main execution ===
-print("PGA Golfer Bot (Enhanced Edition) starting...")
+print("=" * 70)
+print("PGA GOLFER BOT - ENHANCED EDITION")
+print("=" * 70)
+print(f"Tracking: {GOLFER_FULL_NAME}")
 print(f"TEST_MODE = {TEST_MODE} → {'Will ONLY PRINT (no tweets)' if TEST_MODE else 'Will POST real tweets!'}")
+print("=" * 70)
 
 last_known_status = load_last_status()
 
@@ -600,33 +651,35 @@ if 6 <= hour <= 22:  # Reasonable golf hours ET
         tweet_text, error = get_golfer_update_from_espn(active_event['name'])
         
         if error:
-            print(f"  Error: {error}")
+            print(f"  ❌ Error: {error}")
         elif tweet_text:
-            print(f"  Generated tweet: {tweet_text}")
-            print(f"  Last known status: {last_known_status}")
+            print(f"  📝 Generated tweet: {tweet_text}")
+            print(f"  📋 Last known status: {last_known_status}")
             
             # Only tweet if status has changed
             if tweet_text != last_known_status:
                 try:
                     if TEST_MODE:
-                        print(f"  WOULD TWEET: {tweet_text}")
+                        print(f"  🧪 TEST MODE - WOULD TWEET: {tweet_text}")
                     else:
                         response = client.create_tweet(text=tweet_text[:280])
-                        print(f"  TWEETED: {tweet_text}")
-                        print(f"  Link: https://x.com/i/status/{response.data['id']}")
+                        print(f"  ✅ TWEETED: {tweet_text}")
+                        print(f"  🔗 Link: https://x.com/i/status/{response.data['id']}")
                     
                     save_last_status(tweet_text)
                     
                 except tweepy.TweepyException as e:
-                    print(f"  Tweet error: {e}")
+                    print(f"  ❌ Tweet error: {e}")
             else:
-                print(f"  Status unchanged - no tweet needed")
-                print(f"  Tweet would be: {tweet_text}")
+                print(f"  ⏭️  Status unchanged - no tweet needed")
+                print(f"  💬 Tweet would be: {tweet_text}")
         else:
-            print(f"  No tweet generated - tweet_text is None or empty")
+            print(f"  ⚠️  No tweet generated - tweet_text is None or empty")
     else:
         print(f"[{et_now.strftime('%H:%M ET')}] No active PGA event detected.")
 else:
-    print(f"[{et_now.strftime('%H:%M ET')}] Outside golf hours – skipping check.")
+    print(f"[{et_now.strftime('%H:%M ET')}] Outside golf hours (6 AM - 10 PM ET) – skipping check.")
 
+print("=" * 70)
 print("Bot run complete.")
+print("=" * 70)
