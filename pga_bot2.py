@@ -305,7 +305,7 @@ def generate_tee_time_tweet(tournament_info):
     
     # Parse position for context
     position_num = None
-    if position:
+    if position and position != "in the field":
         pos_str = position.replace('T', '').replace('-', '').replace('st', '').replace('nd', '').replace('rd', '').replace('th', '')
         try:
             position_num = int(pos_str)
@@ -324,15 +324,37 @@ def generate_tee_time_tweet(tournament_info):
         flair.extend(["Final round! 🏁", "Sunday vibes! ☀️", "Finish strong! 💪"])
     elif round_num == 3:
         flair.extend(["Moving day! 📊", "Saturday charge! ⚡", "Make a move! 🚀"])
+    elif round_num == 1:
+        flair.extend(["Let's go! ⛳", "Here we go! 🔥", "Tournament time! 🎯", "Game on! 💪"])
     
-    templates = [
-        f"Neal Shipley tees off at {tee_time} for Round {round_num} of the {tournament}. Currently {position} at {total_score}.",
-        f"Round {round_num} tee time: {tee_time} for Neal Shipley. {position} ({total_score}) at the {tournament}.",
-        f"Neal Shipley starts Round {round_num} at {tee_time}. Sits {position} at {total_score} heading into today at the {tournament}.",
-        f"{tee_time} tee time for Neal Shipley in Round {round_num}. Currently {position}, {total_score} at the {tournament}.",
-        f"Neal Shipley {position} at {total_score} going into Round {round_num}. Tees off at {tee_time} at the {tournament}.",
-        f"⛳ {tee_time} start for Neal Shipley! Round {round_num} at the {tournament}. {position}, {total_score}.",
-    ]
+    # Handle different scenarios
+    if round_num == 1:
+        # Round 1 - no position yet
+        templates = [
+            f"Neal Shipley tees off at {tee_time} for Round 1 of the {tournament}.",
+            f"Round 1 tee time: {tee_time} for Neal Shipley at the {tournament}.",
+            f"Neal Shipley starts his week at {tee_time} in Round 1. {tournament}.",
+            f"{tee_time} tee time for Neal Shipley! Round 1 of the {tournament}.",
+            f"⛳ {tee_time} start for Neal Shipley at the {tournament}. Round 1!",
+        ]
+    elif position == "in the field" or not position:
+        # Has played but position not showing
+        templates = [
+            f"Neal Shipley tees off at {tee_time} for Round {round_num} of the {tournament}. Currently at {total_score}.",
+            f"Round {round_num} tee time: {tee_time} for Neal Shipley ({total_score}) at the {tournament}.",
+            f"Neal Shipley starts Round {round_num} at {tee_time}. Sits at {total_score} at the {tournament}.",
+            f"{tee_time} tee time for Neal Shipley in Round {round_num} ({total_score}) at the {tournament}.",
+        ]
+    else:
+        # Has position and prior score
+        templates = [
+            f"Neal Shipley tees off at {tee_time} for Round {round_num} of the {tournament}. Currently {position} at {total_score}.",
+            f"Round {round_num} tee time: {tee_time} for Neal Shipley. {position} ({total_score}) at the {tournament}.",
+            f"Neal Shipley starts Round {round_num} at {tee_time}. Sits {position} at {total_score} heading into today at the {tournament}.",
+            f"{tee_time} tee time for Neal Shipley in Round {round_num}. Currently {position}, {total_score} at the {tournament}.",
+            f"Neal Shipley {position} at {total_score} going into Round {round_num}. Tees off at {tee_time} at the {tournament}.",
+            f"⛳ {tee_time} start for Neal Shipley! Round {round_num} at the {tournament}. {position}, {total_score}.",
+        ]
     
     base_tweet = random.choice(templates)
     
@@ -466,43 +488,54 @@ def get_golfer_update_from_espn(tournament_name):
                     tweet = generate_active_play_tweet(tournament_info)
                     return tweet, None
                 
-                # SCENARIO 2: Has score and position, Thu/Fri, not currently playing (check for tee time)
-                elif position and total_score and day_of_week in [3, 4]:  # Thursday or Friday
-                    if tee_time and any(char.isdigit() for char in tee_time):
-                        # Has a tee time
-                        tournament_info = {
-                            'tournament_name': tournament_name,
-                            'total_score': total_score,
-                            'position': position,
-                            'tee_time': tee_time,
-                            'round': period if thru == 'F' else period,
-                            'status': 'upcoming_tee_time'
-                        }
-                        tweet = generate_tee_time_tweet(tournament_info)
-                        return tweet, None
-                    elif thru == 'F':
-                        # Finished the round - use active play template with commentary
-                        tournament_info = {
-                            'tournament_name': tournament_name,
-                            'today_score': today_score,
-                            'total_score': total_score,
-                            'position': position,
-                            'hole': '18',  # Finished
-                            'round': period,
-                            'status': 'round_complete'
-                        }
-                        
-                        commentary = get_fun_commentary(position, total_score, today_score, period)
-                        base_tweet = f"Neal Shipley finishes Round {period} at {today_score} ({total_score} overall). {position} at the {tournament_name}."
-                        
-                        if commentary:
-                            tweet = f"{base_tweet} {commentary}"
-                        else:
-                            tweet = base_tweet
-                        
-                        return tweet, None
+                # SCENARIO 2: Has tee time showing (not started yet or between rounds)
+                # This covers Thu/Fri/Sat/Sun morning before they tee off
+                elif tee_time and any(char.isdigit() for char in tee_time) and thru != 'F':
+                    # Determine what round they're about to play
+                    next_round = period
+                    
+                    # If they finished previous round (thru == 'F' from previous check would have caught it)
+                    # and have a tee time, they're starting next round
+                    
+                    # For Round 1 (Thursday), total_score might be 'E' and position might be empty
+                    display_total = total_score if total_score and total_score != 'E' else 'E'
+                    display_position = position if position else "in the field"
+                    
+                    tournament_info = {
+                        'tournament_name': tournament_name,
+                        'total_score': display_total,
+                        'position': display_position,
+                        'tee_time': tee_time,
+                        'round': next_round,
+                        'status': 'upcoming_tee_time'
+                    }
+                    tweet = generate_tee_time_tweet(tournament_info)
+                    return tweet, None
                 
-                # SCENARIO 3: Sat/Sun with no position or tee time = missed cut
+                # SCENARIO 3: Finished a round (thru == 'F')
+                elif thru == 'F':
+                    # Finished the round - use active play template with commentary
+                    tournament_info = {
+                        'tournament_name': tournament_name,
+                        'today_score': today_score,
+                        'total_score': total_score,
+                        'position': position,
+                        'hole': '18',  # Finished
+                        'round': period,
+                        'status': 'round_complete'
+                    }
+                    
+                    commentary = get_fun_commentary(position, total_score, today_score, period)
+                    base_tweet = f"Neal Shipley finishes Round {period} at {today_score} ({total_score} overall). {position} at the {tournament_name}."
+                    
+                    if commentary:
+                        tweet = f"{base_tweet} {commentary}"
+                    else:
+                        tweet = base_tweet
+                    
+                    return tweet, None
+                
+                # SCENARIO 4: Sat/Sun with no position or tee time = missed cut
                 elif day_of_week in [5, 6] and (not position or not tee_time or not any(char.isdigit() for char in tee_time)):
                     tournament_info = {
                         'tournament_name': tournament_name,
