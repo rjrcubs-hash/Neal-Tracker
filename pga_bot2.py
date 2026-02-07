@@ -433,9 +433,10 @@ def get_golfer_update_from_espn(tournament_name):
         if not competitors:
             return None, "No competitors or active event found in ESPN data."
         
-        # Get current day of week (0=Monday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday)
+        # Get current day of week and time (0=Monday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday)
         et_now = datetime.now(pytz.timezone('America/New_York'))
         day_of_week = et_now.weekday()
+        current_hour = et_now.hour
         
         for player in competitors:
             athlete = player.get('athlete', {})
@@ -466,13 +467,41 @@ def get_golfer_update_from_espn(tournament_name):
                 # Get tee time if available
                 tee_time = status_obj.get('displayValue', '')  # Often shows tee time like "10:30 AM"
                 
-                print(f"  DEBUG - Position: '{position}', Thru: '{thru}', Period: {period}, Today: {today_score}, Total: {total_score}")
-                print(f"  DEBUG - Tee time/status: '{tee_time}', Day: {day_of_week} (0=Mon, 3=Thu, 4=Fri, 5=Sat, 6=Sun)")
-                print(f"  DEBUG - Linescores available: {len(linescores) if linescores else 0}")
+                # Determine if round is currently LIVE or finished from a previous day
+                # Key insight: If thru == 'F' before typical start times, it's yesterday's round
+                # Golf rounds typically start 7 AM - 2 PM and finish 2 PM - 7 PM ET
+                round_is_live = False
+                round_finished_today = False
+                waiting_for_tee_time = False
                 
-                # SCENARIO 1: Actively playing (has thru holes, thru is not "F")
-                # Position might be temporarily missing during live play
-                if thru and thru != 'F' and thru.isdigit():
+                if thru and thru.isdigit():
+                    # Player has completed some holes - this is LIVE action
+                    round_is_live = True
+                elif thru == 'F':
+                    # Round is complete - but is it from today or yesterday?
+                    # If it's early morning (before 11 AM), likely yesterday's finished round
+                    # If it's afternoon/evening (after 2 PM), could be today's finished round
+                    if current_hour >= 14:  # After 2 PM - reasonable that they finished today
+                        round_finished_today = True
+                    elif current_hour < 11:  # Before 11 AM - likely yesterday's round
+                        # Check if they have a tee time for today
+                        if tee_time and any(char.isdigit() for char in tee_time):
+                            waiting_for_tee_time = True
+                        else:
+                            # No tee time shown and it's morning - might be waiting or cut
+                            pass
+                    else:  # Between 11 AM - 2 PM - ambiguous, need to be careful
+                        # Could be finishing up or waiting
+                        if tee_time and any(char.isdigit() for char in tee_time):
+                            waiting_for_tee_time = True
+                
+                print(f"  DEBUG - Position: '{position}', Thru: '{thru}', Period: {period}, Today: {today_score}, Total: {total_score}")
+                print(f"  DEBUG - Tee time/status: '{tee_time}', Day: {day_of_week} (0=Mon, 3=Thu, 4=Fri, 5=Sat, 6=Sun), Hour: {current_hour}")
+                print(f"  DEBUG - Linescores available: {len(linescores) if linescores else 0}")
+                print(f"  DEBUG - Round live: {round_is_live}, Finished today: {round_finished_today}, Waiting for tee: {waiting_for_tee_time}")
+                
+                # SCENARIO 1: Actively playing RIGHT NOW (has thru holes showing current progress)
+                if round_is_live:
                     # Use position if available, otherwise use a placeholder
                     display_position = position if position else "in the field"
                     
@@ -488,14 +517,14 @@ def get_golfer_update_from_espn(tournament_name):
                     tweet = generate_active_play_tweet(tournament_info)
                     return tweet, None
                 
-                # SCENARIO 2: Has tee time showing (not started yet or between rounds)
-                # This covers Thu/Fri/Sat/Sun morning before they tee off
-                elif tee_time and any(char.isdigit() for char in tee_time) and thru != 'F':
+                # SCENARIO 2: Has tee time showing - waiting to start round
+                elif waiting_for_tee_time or (tee_time and any(char.isdigit() for char in tee_time) and not round_finished_today and not round_is_live):
                     # Determine what round they're about to play
                     next_round = period
                     
-                    # If they finished previous round (thru == 'F' from previous check would have caught it)
-                    # and have a tee time, they're starting next round
+                    # If they finished previous round (thru == 'F') and have a tee time for next round
+                    if thru == 'F':
+                        next_round = period + 1
                     
                     # For Round 1 (Thursday), total_score might be 'E' and position might be empty
                     display_total = total_score if total_score and total_score != 'E' else 'E'
@@ -512,21 +541,21 @@ def get_golfer_update_from_espn(tournament_name):
                     tweet = generate_tee_time_tweet(tournament_info)
                     return tweet, None
                 
-                # SCENARIO 3: Finished a round (thru == 'F')
-                elif thru == 'F':
-                    # Finished the round - use active play template with commentary
+                # SCENARIO 3: Finished a round TODAY (confirmed by time of day)
+                elif round_finished_today:
+                    # Finished the round today - announce completion
                     tournament_info = {
                         'tournament_name': tournament_name,
                         'today_score': today_score,
                         'total_score': total_score,
-                        'position': position,
+                        'position': position if position else "in the field",
                         'hole': '18',  # Finished
                         'round': period,
                         'status': 'round_complete'
                     }
                     
                     commentary = get_fun_commentary(position, total_score, today_score, period)
-                    base_tweet = f"Neal Shipley finishes Round {period} at {today_score} ({total_score} overall). {position} at the {tournament_name}."
+                    base_tweet = f"Neal Shipley finishes Round {period} at {today_score} ({total_score} overall). {position if position else 'Round complete'} at the {tournament_name}."
                     
                     if commentary:
                         tweet = f"{base_tweet} {commentary}"
@@ -536,7 +565,7 @@ def get_golfer_update_from_espn(tournament_name):
                     return tweet, None
                 
                 # SCENARIO 4: Sat/Sun with no position or tee time = missed cut
-                elif day_of_week in [5, 6] and (not position or not tee_time or not any(char.isdigit() for char in tee_time)):
+                elif day_of_week in [5, 6] and not round_is_live and not waiting_for_tee_time and (not position or not tee_time or not any(char.isdigit() for char in tee_time)):
                     tournament_info = {
                         'tournament_name': tournament_name,
                         'total_score': total_score,
@@ -545,9 +574,9 @@ def get_golfer_update_from_espn(tournament_name):
                     tweet = generate_missed_cut_tweet(tournament_info)
                     return tweet, None
                 
-                # SCENARIO 4: In field but not started yet
+                # SCENARIO 5: In field but not started yet / waiting between rounds
                 else:
-                    return None, f"{GOLFER_FULL_NAME} in field but no active data yet."
+                    return None, f"{GOLFER_FULL_NAME} in field - finished previous round, waiting for next tee time (between rounds)."
         
         return None, f"{GOLFER_FULL_NAME} not found in current leaderboard."
     
