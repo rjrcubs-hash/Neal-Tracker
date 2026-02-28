@@ -5,7 +5,7 @@
   "today_score": null,
   "total_score": null,
   "position": null,
-  "missed_cut": false,
+  "missed_cut": true,
   "tee_time_tweeted_round": null,
   "round_finish_tweeted": null,
   "last_hole_milestone": null,
