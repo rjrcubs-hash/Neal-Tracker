@@ -155,28 +155,36 @@ def fetch(url: str, params: dict | None = None, retries: int = 3, delay: float =
 
 def get_active_pga_event() -> dict | None:
     """
-    Returns the first in-progress or temporally active PGA Tour event from LiveGolf API.
-    Falls back to ESPN's own event name if LiveGolf is unavailable.
+    Gets the current PGA Tour event directly from ESPN.
+    LiveGolf API removed from event detection — it was timing out every single
+    run and wasting 16+ seconds. ESPN returns the tournament name reliably and
+    is already the source for all player data anyway.
     """
-    data = fetch(f"{LIVEGOLF_URL}/events", params={"api_key": LIVEGOLF_API_KEY, "tour": "pga-tour"})
-    if data:
-        events = data if isinstance(data, list) else data.get("events", [])
-        now    = datetime.utcnow().isoformat() + "Z"
-        for ev in events:
-            status = ev.get("status", "")
-            start  = ev.get("startDatetime", "")
-            end    = ev.get("endDatetime", "")
-            if status in ("In Progress", "Paused") or (start and end and start <= now <= end):
-                return {"name": ev["name"], "status": status}
+    data = fetch(ESPN_URL)
+    if not data:
+        return None
 
-    # Fallback: try to infer tournament name from ESPN itself
-    espn = fetch(ESPN_URL)
-    if espn:
-        events_list = espn.get("events", [])
-        if events_list:
-            return {"name": events_list[0].get("name", "the tournament"), "status": "unknown"}
+    events_list = data.get("events", [])
+    if not events_list:
+        return None
 
-    return None
+    event  = events_list[0]
+    name   = event.get("name", "the tournament")
+
+    # ESPN status can be a dict or a plain string depending on endpoint version
+    raw_status = event.get("status", {})
+    if isinstance(raw_status, dict):
+        status_str = raw_status.get("type", {}).get("name", "unknown")
+    else:
+        status_str = str(raw_status)
+
+    # Only return if competitors are present — tournament is actually running
+    competitions = event.get("competitions", [])
+    if not competitions or not competitions[0].get("competitors"):
+        print(f"  ⚠️  ESPN shows '{name}' but no competitors yet — tournament may not have started.")
+        return None
+
+    return {"name": name, "status": status_str}
 
 
 # ── ESPN Player Data ──────────────────────────────────────────────────────────
@@ -230,17 +238,26 @@ def get_player_data(tournament_name: str) -> dict | None:
             today_score = parse_score(linescores[period - 1].get("displayValue"))
 
         # ── Missed-cut detection ──────────────────────────────────────────────
-        # ESPN may express this via status.type.name OR a special position string
+        # ESPN signals missed cut via: status.type.name, position string, OR
+        # tee_time/displayValue field containing "CUT" (seen in live output).
+        CUT_SIGNALS = {"CUT", "MC", "WD", "DQ", "RTD", "MDF"}
         status_type = ""
         raw_type    = status_obj.get("type", {})
         if isinstance(raw_type, dict):
             status_type = raw_type.get("name", "").lower()
         elif isinstance(raw_type, str):
             status_type = raw_type.lower()
+
         missed_cut = (
             "cut" in status_type
-            or position.upper() in ("CUT", "MC", "WD", "DQ", "RTD")
+            or position.upper() in CUT_SIGNALS
+            or str(tee_time).upper().strip() in CUT_SIGNALS
         )
+
+        # Normalise position: if ESPN sent a cut signal there, clear it so
+        # tweet text doesn't say "position: CUT" awkwardly
+        if position.upper() in CUT_SIGNALS:
+            position = ""
 
         # ── Hole / live state parsing ──────────────────────────────────────────
         # thru: digit string → actively playing or just starting
@@ -453,19 +470,54 @@ def tweet_missed_cut(p: dict) -> str:
 
 # ── Tweet Posting ─────────────────────────────────────────────────────────────
 
-def post_tweet(text: str) -> bool:
+def post_tweet(text: str, retries: int = 3) -> bool:
+    """
+    Post a tweet with retry logic for transient Twitter errors (503, 500, etc).
+    Only marks success (True) when the tweet is actually confirmed posted.
+    State is never marked as 'done' unless this returns True.
+    """
     text = text[:280]
-    try:
-        if TEST_MODE:
-            print(f"  🧪 [TEST] {text}")
-            return True
-        resp = client.create_tweet(text=text)
-        print(f"  ✅ Tweeted: {text}")
-        print(f"  🔗 https://x.com/i/status/{resp.data['id']}")
+
+    if TEST_MODE:
+        print(f"  🧪 [TEST] {text}")
         return True
-    except tweepy.TweepyException as exc:
-        print(f"  ❌ Tweet error: {exc}")
-        return False
+
+    for attempt in range(retries):
+        try:
+            resp = client.create_tweet(text=text)
+            print(f"  ✅ Tweeted: {text}")
+            print(f"  🔗 https://x.com/i/status/{resp.data['id']}")
+            return True
+
+        except tweepy.TweepyException as exc:
+            err_str = str(exc)
+
+            # Transient server errors — worth retrying
+            if any(code in err_str for code in ("503", "500", "502", "504")):
+                wait = 5 * (attempt + 1)
+                if attempt < retries - 1:
+                    print(f"  ⚠️  Twitter {err_str[:40]} — retry {attempt+1}/{retries} in {wait}s…")
+                    time.sleep(wait)
+                    continue
+                else:
+                    print(f"  ❌ Twitter still unavailable after {retries} attempts. Will retry next run.")
+                    return False  # State NOT marked done — bot retries next cron
+
+            # Duplicate tweet — treat as success (tweet already exists)
+            if "duplicate" in err_str.lower() or "187" in err_str:
+                print(f"  ⚠️  Duplicate tweet detected — marking as sent.")
+                return True
+
+            # Rate limit — don't retry now, let next cron handle it
+            if "429" in err_str or "rate limit" in err_str.lower():
+                print(f"  ⚠️  Rate limited by Twitter. Will retry next run.")
+                return False
+
+            # Any other error — log and don't mark as sent
+            print(f"  ❌ Tweet error: {exc}")
+            return False
+
+    return False
 
 
 # ── Decision Engine ───────────────────────────────────────────────────────────
