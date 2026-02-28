@@ -26,11 +26,6 @@ import pytz
 import requests
 from twikit import Client as TwikitClient
 
-# ── Credentials ───────────────────────────────────────────────────────────────
-TWITTER_USERNAME = os.environ.get("TWITTER_USERNAME")   # e.g. NealShipleyTrak
-TWITTER_EMAIL    = os.environ.get("TWITTER_EMAIL")      # account email
-TWITTER_PASSWORD = os.environ.get("TWITTER_PASSWORD")   # account password
-
 # ── Config ────────────────────────────────────────────────────────────────────
 GOLFER_NAME   = "Neal Shipley"
 TEST_MODE     = os.environ.get("TEST_MODE", "false").lower() == "true"
@@ -49,10 +44,13 @@ _twikit: TwikitClient | None = None
 
 async def _get_twikit() -> TwikitClient | None:
     """
-    Returns an authenticated twikit client.
-      • Fast path: loads cookies from twikit_cookies.json (no login needed)
-      • Slow path: full login if cookies are missing or expired, then saves
-        fresh cookies so the next run is fast again.
+    Loads twikit session from cookies and spoofs a real Chrome browser
+    fingerprint to avoid X's 226 anti-automation detection.
+
+    X's code 226 fires when the HTTP request looks like it came from a
+    non-browser client. We override the User-Agent and key headers on
+    twikit's underlying httpx session to match a real Chrome on Windows
+    request — the same environment the cookies were generated from.
     """
     global _twikit
     if _twikit is not None:
@@ -60,42 +58,57 @@ async def _get_twikit() -> TwikitClient | None:
 
     client = TwikitClient("en-US")
 
-    if Path(COOKIES_FILE).exists():
-        try:
-            client.load_cookies(COOKIES_FILE)
-            print("  🍪 twikit: cookies loaded.")
-            _twikit = client
-            return _twikit
-        except Exception as e:
-            print(f"  ⚠️  twikit: cookie load failed ({e}) — re-logging in.")
-
-    if not all([TWITTER_USERNAME, TWITTER_EMAIL, TWITTER_PASSWORD]):
-        print("  ❌ twikit: TWITTER_USERNAME / TWITTER_EMAIL / TWITTER_PASSWORD not set in secrets.")
+    if not Path(COOKIES_FILE).exists():
+        print(f"  ❌ {COOKIES_FILE} not found in repo.")
+        print(f"  → Run convert_cookies.py locally and commit the file.")
         return None
 
     try:
-        print("  🔐 twikit: logging in…")
-        await client.login(
-            auth_info_1=TWITTER_USERNAME,
-            auth_info_2=TWITTER_EMAIL,
-            password=TWITTER_PASSWORD,
-        )
-        client.save_cookies(COOKIES_FILE)
-        print("  ✅ twikit: login successful, cookies saved.")
-        _twikit = client
-        return _twikit
+        client.load_cookies(COOKIES_FILE)
+        print("  🍪 twikit: cookies loaded.")
     except Exception as e:
-        print(f"  ❌ twikit: login failed: {e}")
+        print(f"  ❌ Cookie load failed [{type(e).__name__}]: {repr(e)}")
+        print(f"  → Run convert_cookies.py locally and re-commit {COOKIES_FILE}.")
         return None
+
+    # ── Spoof a real Chrome on Windows browser fingerprint ────────────────────
+    # X's Cloudflare + internal bot detection checks User-Agent and several
+    # headers. GitHub Actions runners send Python/httpx defaults which are
+    # trivially detected. Overriding these makes requests indistinguishable
+    # from a real Chrome browser session.
+    browser_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language":  "en-US,en;q=0.9",
+        "Accept-Encoding":  "gzip, deflate, br",
+        "Accept":           "*/*",
+        "Sec-Ch-Ua":        '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest":   "empty",
+        "Sec-Fetch-Mode":   "cors",
+        "Sec-Fetch-Site":   "same-origin",
+    }
+
+    # twikit uses httpx internally — update headers on the underlying client
+    try:
+        client.http.headers.update(browser_headers)
+        print("  🌐 twikit: browser headers applied.")
+    except Exception as e:
+        # Non-fatal — headers may already be set or client structure differs
+        print(f"  ⚠️  Could not set browser headers ({e}) — continuing anyway.")
+
+    _twikit = client
+    return _twikit
 
 
 async def _post_async(text: str) -> bool:
     """
-    Core async post.
-    - Logs full exception type + message so blank errors are diagnosable.
-    - On ANY failure, wipes cookies and retries once with a fresh login.
-      (Not just Unauthorized/Forbidden — twikit raises various types on
-      stale sessions depending on version.)
+    Posts a tweet via twikit. Logs full exception type for diagnostics.
+    No re-auth retry — we're cookies-only, re-auth can't fix a 226.
     """
     client = await _get_twikit()
     if client is None:
@@ -108,28 +121,18 @@ async def _post_async(text: str) -> bool:
         return True
 
     except Exception as e:
-        # Log type AND repr so blank-message exceptions are visible
-        print(f"  ⚠️  twikit error [{type(e).__name__}]: {repr(e)}")
-        print(f"  🔄 Clearing cookies and retrying with fresh login…")
+        err = repr(e)
+        print(f"  ⚠️  twikit error [{type(e).__name__}]: {err}")
 
-        # Wipe stale session regardless of error type
-        global _twikit
-        _twikit = None
-        Path(COOKIES_FILE).unlink(missing_ok=True)
+        if "226" in err:
+            print("  ℹ️  Code 226 = X anti-automation triggered.")
+            print("  ℹ️  Browser headers applied — if this persists, re-export")
+            print("  ℹ️  cookies from Chrome and re-commit twikit_cookies.json.")
+        elif "403" in err or "401" in err:
+            print("  ℹ️  Auth error — cookies may be expired.")
+            print("  ℹ️  Re-run convert_cookies.py and re-commit twikit_cookies.json.")
 
-        # Re-authenticate and retry once
-        client = await _get_twikit()
-        if client is None:
-            print(f"  ❌ Re-auth failed — no client.")
-            return False
-        try:
-            tweet = await client.create_tweet(text=text)
-            print(f"  ✅ Tweeted (after re-auth): {text}")
-            print(f"  🔗 https://x.com/i/status/{tweet.id}")
-            return True
-        except Exception as e2:
-            print(f"  ❌ Post failed after re-auth [{type(e2).__name__}]: {repr(e2)}")
-            return False
+        return False
 
 # ── Default State Schema ──────────────────────────────────────────────────────
 DEFAULT_STATE: dict = {
