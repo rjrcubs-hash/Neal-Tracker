@@ -45,7 +45,7 @@ client = tweepy.Client(
 
 # ── Config ────────────────────────────────────────────────────────────────────
 GOLFER_NAME  = "Neal Shipley"
-TEST_MODE    = True       # True = print only, False = post real tweets
+TEST_MODE    = False       # True = print only, False = post real tweets
 STATE_FILE   = "bot_state.json"
 
 ESPN_URL     = "https://site.api.espn.com/apis/site/v2/sports/golf/leaderboard"
@@ -597,3 +597,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
