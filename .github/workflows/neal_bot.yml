@@ -1,0 +1,163 @@
+# .github/workflows/pga_bot.yml
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# Neal Shipley PGA Bot — Private Repo Optimized
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# PRIVATE REPO MINUTES BUDGET (GitHub Free = 2,000 min/month):
+#   Strategy: run every 5 min ONLY Thu–Sun during actual golf hours.
+#             Skip entirely Mon–Wed unless manually triggered.
+#             Each run ≈ 45 sec → billed as 1 min (GitHub rounds up).
+#             4 days × 11 hours × 12 runs/hr × 1 min = ~528 min/tournament.
+#             ≈ 3 full tournament weeks within the free tier per month.
+#
+# STATE PERSISTENCE:
+#   bot_state.json is committed back to the repo after each run that changes
+#   it. A Deploy Key (SSH) is used so that push does NOT re-trigger this
+#   workflow. Without it, every state save would queue a new run → loop.
+#   Setup instructions: see bottom of this file.
+#
+# CONCURRENCY:
+#   Singleton lock — only one run at a time, never cancels in-progress.
+#   Prevents state corruption from two overlapping runs writing state at
+#   the same time.
+# ══════════════════════════════════════════════════════════════════════════════
+
+name: PGA Bot
+
+on:
+  # ── Manual trigger: test runs, forcing mid-week checks, etc. ────────────────
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: "TEST_MODE — print tweets, don't post"
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+
+  # ── Tournament days only: Thu(4) Fri(5) Sat(6) Sun(0) ───────────────────────
+  # 13:00–23:55 UTC = ~9 AM – 7:55 PM EDT = covers all tee times + finishes
+  # Runs every 5 min (GitHub's minimum interval).
+  schedule:
+    - cron: "*/5 13-23 * * 0,4,5,6"
+
+# ── Singleton — one instance at a time, never kill a run mid-flight ───────────
+concurrency:
+  group: pga-bot-singleton
+  cancel-in-progress: false
+
+jobs:
+  run-bot:
+    name: "Run PGA Bot"
+    runs-on: ubuntu-latest
+    timeout-minutes: 4        # Hard cap — must finish before next 5-min window
+
+    permissions:
+      contents: write          # Needed to push bot_state.json back
+
+    steps:
+
+      # ── 1. Checkout via Deploy Key ───────────────────────────────────────────
+      # Using ssh-key here means git pushes from this workflow are NOT treated
+      # as a new push event, so the workflow does not re-trigger itself.
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          fetch-depth: 1
+
+      # ── 2. Python 3.12 ──────────────────────────────────────────────────────
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ── 3. Cache pip ─────────────────────────────────────────────────────────
+      # Saves ~20s per run. Over a 4-day tournament week (528 runs) that's
+      # roughly 2.5 hours of saved runner time and billed minutes.
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-
+
+      # ── 4. Install ───────────────────────────────────────────────────────────
+      - name: Install dependencies
+        run: pip install -r requirements.txt --quiet
+
+      # ── 5. Run the bot ───────────────────────────────────────────────────────
+      - name: Run bot
+        env:
+          TWITTER_CONSUMER_KEY:    ${{ secrets.TWITTER_CONSUMER_KEY }}
+          TWITTER_CONSUMER_SECRET: ${{ secrets.TWITTER_CONSUMER_SECRET }}
+          TWITTER_ACCESS_TOKEN:    ${{ secrets.TWITTER_ACCESS_TOKEN }}
+          TWITTER_ACCESS_SECRET:   ${{ secrets.TWITTER_ACCESS_SECRET }}
+          LIVEGOLF_API_KEY:        ${{ secrets.LIVEGOLF_API_KEY }}
+          TEST_MODE: ${{ github.event.inputs.test_mode || 'false' }}
+        run: python shipley_bot.py
+
+      # ── 6. Persist state file (no-op if nothing changed) ────────────────────
+      - name: Persist bot state
+        run: |
+          git config user.name  "pga-bot[bot]"
+          git config user.email "pga-bot@users.noreply.github.com"
+          git add bot_state.json
+
+          # If nothing changed, exit cleanly — no empty commit
+          git diff --cached --quiet && echo "✓ State unchanged — skipping commit." && exit 0
+
+          # [skip ci] in the message is a fallback safety net on top of the
+          # deploy key, to prevent any edge-case workflow re-triggers.
+          git commit -m "chore: bot state [skip ci]"
+          git push
+          echo "✓ State committed and pushed."
+
+        # Non-fatal: rare race condition between two near-simultaneous runs.
+        # The loser's push will fail here but the next run re-reads state from
+        # git and recovers correctly.
+        continue-on-error: true
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DEPLOY KEY SETUP (one-time, ~3 minutes)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 1. On your local machine, generate a key pair (no passphrase):
+#      ssh-keygen -t ed25519 -C "pga-bot-deploy" -f ./deploy_key
+#    This creates two files: deploy_key (private) and deploy_key.pub (public)
+#
+# 2. Add the PUBLIC key to your repo:
+#    GitHub repo → Settings → Security → Deploy keys → Add deploy key
+#    Title: "pga-bot"
+#    Key: paste contents of deploy_key.pub
+#    ✅ Check "Allow write access"
+#
+# 3. Add the PRIVATE key as a repo secret:
+#    GitHub repo → Settings → Secrets and variables → Actions → New repository secret
+#    Name:  DEPLOY_KEY
+#    Value: paste the ENTIRE contents of deploy_key (including header/footer lines)
+#
+# 4. Delete both files from your machine:
+#      rm deploy_key deploy_key.pub
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# MINUTES BUDGET BREAKDOWN (GitHub Free private repo = 2,000 min/month)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Per tournament week (Thu–Sun):
+#   11 hours/day × 4 days = 44 hours active
+#   12 runs/hour (every 5 min) × 44 hours = 528 runs
+#   Each run billed as ~1 min (45 sec actual, rounded up)
+#   = ~528 billed minutes per tournament week
+#
+# Monthly budget usage (assuming ~3 tournaments/month):
+#   3 × 528 = ~1,584 minutes used → stays within 2,000 free tier
+#   4 tournaments in a month = ~2,112 → slightly over, ~$0.10 overage
+#
+# IF YOU WANT TO STAY STRICTLY FREE:
+#   Option A: Make the repo public (free unlimited minutes, if OK with you)
+#   Option B: Narrow the cron window to 14:00–22:00 UTC (8 AM–6 PM EDT)
+#             → 8 hours × 4 days × 12 = 384 min/week, comfortably free
+#   Option C: Change cron to */10 (every 10 min) → 264 min/week, very safe
+# ══════════════════════════════════════════════════════════════════════════════
