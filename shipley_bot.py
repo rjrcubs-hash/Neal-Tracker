@@ -1,61 +1,131 @@
 #!/usr/bin/env python3
 """
-Neal Shipley PGA Tour Bot — Optimized for live, hole-by-hole updates.
+Neal Shipley PGA Tour Bot — Free Twitter posting via twikit.
 
-KEY IMPROVEMENTS OVER V1:
-─────────────────────────
-1. Granular state tracking  – stores round, hole, today/total score, position.
-   Tweets fire on *changes*, not on full-text comparison (which broke with random templates).
-2. Score-change detection   – detects eagle / double-bogey in real time and fires an alert tweet.
-3. Interval milestone logic – tweets at holes 6, 12, and round-finish (F/18).
-4. Tee-time dedup           – tracks which round we already tweeted a tee-time for.
-5. Round-finish dedup       – tracks which round we already tweeted a finish for.
-6. Proper thru parsing      – handles 'F', int strings, None, and 0 cleanly.
-7. Retry logic              – 3-attempt fetch with back-off on both ESPN + LiveGolf.
-8. Tournament change reset  – resets all counters when a new tournament is detected.
-9. Better ESPN navigation   – handles both wrapped (events[]) and flat competitions[] shapes.
-10. Bug fix: score parsing   – old get_fun_commentary() compared abs value vs sign incorrectly.
-11. Hashtags                – every tweet ends with relevant hashtags.
-12. Missed-cut robustness   – reads ESPN's status.type field, not just position string.
+HOW POSTING WORKS:
+  twikit uses X's internal web API (the same GraphQL endpoints your browser
+  uses at x.com). No paid API plan needed. Authenticates once with your
+  account username + email + password, then persists session cookies in
+  twikit_cookies.json. Every subsequent run just loads the cookie file —
+  no login round-trip required until cookies expire, at which point the
+  bot re-authenticates automatically.
+
+  twikit_cookies.json is committed back to the repo alongside bot_state.json
+  so cookies survive between GitHub Actions runs.
 """
 
+import asyncio
 import json
 import os
 import random
 import time
 from datetime import datetime
+from pathlib import Path
 
 import pytz
 import requests
-import tweepy
+from twikit import Client as TwikitClient
+from twikit.errors import Forbidden, Unauthorized
 
 # ── Credentials ───────────────────────────────────────────────────────────────
-consumer_key        = os.environ.get("TWITTER_CONSUMER_KEY")
-consumer_secret     = os.environ.get("TWITTER_CONSUMER_SECRET")
-access_token        = os.environ.get("TWITTER_ACCESS_TOKEN")
-access_token_secret = os.environ.get("TWITTER_ACCESS_SECRET")
-LIVEGOLF_API_KEY    = os.environ.get("LIVEGOLF_API_KEY")
-
-client = tweepy.Client(
-    consumer_key=consumer_key,
-    consumer_secret=consumer_secret,
-    access_token=access_token,
-    access_token_secret=access_token_secret,
-)
+TWITTER_USERNAME = os.environ.get("TWITTER_USERNAME")   # e.g. NealShipleyTrak
+TWITTER_EMAIL    = os.environ.get("TWITTER_EMAIL")      # account email
+TWITTER_PASSWORD = os.environ.get("TWITTER_PASSWORD")   # account password
 
 # ── Config ────────────────────────────────────────────────────────────────────
-GOLFER_NAME  = "Neal Shipley"
-TEST_MODE    = False       # True = print only, False = post real tweets
-STATE_FILE   = "bot_state.json"
+GOLFER_NAME   = "Neal Shipley"
+TEST_MODE     = os.environ.get("TEST_MODE", "false").lower() == "true"
+STATE_FILE    = "bot_state.json"
+COOKIES_FILE  = "twikit_cookies.json"
 
-ESPN_URL     = "https://site.api.espn.com/apis/site/v2/sports/golf/leaderboard"
-LIVEGOLF_URL = "https://use.livegolfapi.com/v1"
+ESPN_URL      = "https://site.api.espn.com/apis/site/v2/sports/golf/leaderboard"
 
-# Tweet updates at these hole milestones (plus round-finish tweet at F/18)
 UPDATE_MILESTONES = {6, 12}
+HASHTAGS          = "#PGATour #Golf #NealShipley"
+ET                = pytz.timezone("America/New_York")
 
-HASHTAGS = "#PGATour #Golf #NealShipley"
-ET       = pytz.timezone("America/New_York")
+# ── twikit client (module-level, initialised once per run) ────────────────────
+_twikit: TwikitClient | None = None
+
+
+async def _get_twikit() -> TwikitClient | None:
+    """
+    Returns an authenticated twikit client.
+      • Fast path: loads cookies from twikit_cookies.json (no login needed)
+      • Slow path: full login if cookies are missing or expired, then saves
+        fresh cookies so the next run is fast again.
+    """
+    global _twikit
+    if _twikit is not None:
+        return _twikit
+
+    client = TwikitClient("en-US")
+
+    if Path(COOKIES_FILE).exists():
+        try:
+            client.load_cookies(COOKIES_FILE)
+            print("  🍪 twikit: cookies loaded.")
+            _twikit = client
+            return _twikit
+        except Exception as e:
+            print(f"  ⚠️  twikit: cookie load failed ({e}) — re-logging in.")
+
+    if not all([TWITTER_USERNAME, TWITTER_EMAIL, TWITTER_PASSWORD]):
+        print("  ❌ twikit: TWITTER_USERNAME / TWITTER_EMAIL / TWITTER_PASSWORD not set in secrets.")
+        return None
+
+    try:
+        print("  🔐 twikit: logging in…")
+        await client.login(
+            auth_info_1=TWITTER_USERNAME,
+            auth_info_2=TWITTER_EMAIL,
+            password=TWITTER_PASSWORD,
+        )
+        client.save_cookies(COOKIES_FILE)
+        print("  ✅ twikit: login successful, cookies saved.")
+        _twikit = client
+        return _twikit
+    except Exception as e:
+        print(f"  ❌ twikit: login failed: {e}")
+        return None
+
+
+async def _post_async(text: str) -> bool:
+    """
+    Core async post. Handles expired cookies with one automatic re-auth retry.
+    """
+    client = await _get_twikit()
+    if client is None:
+        return False
+
+    try:
+        tweet = await client.create_tweet(text=text)
+        print(f"  ✅ Tweeted: {text}")
+        print(f"  🔗 https://x.com/i/status/{tweet.id}")
+        return True
+
+    except (Unauthorized, Forbidden) as e:
+        # Session expired — wipe cookies and try a fresh login once
+        print(f"  ⚠️  Session expired ({e}) — clearing cookies and retrying.")
+        global _twikit
+        _twikit = None
+        Path(COOKIES_FILE).unlink(missing_ok=True)
+
+        client = await _get_twikit()
+        if client is None:
+            return False
+        try:
+            tweet = await client.create_tweet(text=text)
+            print(f"  ✅ Tweeted (after re-auth): {text}")
+            print(f"  🔗 https://x.com/i/status/{tweet.id}")
+            return True
+        except Exception as e2:
+            print(f"  ❌ Post failed after re-auth: {e2}")
+            return False
+
+    except Exception as e:
+        print(f"  ❌ twikit post error: {e}")
+        return False
 
 # ── Default State Schema ──────────────────────────────────────────────────────
 DEFAULT_STATE: dict = {
@@ -470,11 +540,11 @@ def tweet_missed_cut(p: dict) -> str:
 
 # ── Tweet Posting ─────────────────────────────────────────────────────────────
 
-def post_tweet(text: str, retries: int = 3) -> bool:
+def post_tweet(text: str) -> bool:
     """
-    Post a tweet with retry logic for transient Twitter errors (503, 500, etc).
-    Only marks success (True) when the tweet is actually confirmed posted.
-    State is never marked as 'done' unless this returns True.
+    Post via twikit (X's internal web API). Free, no API plan required.
+    Returns True only when confirmed posted — state is never marked done
+    on failure, so the next cron run retries automatically.
     """
     text = text[:280]
 
@@ -482,42 +552,10 @@ def post_tweet(text: str, retries: int = 3) -> bool:
         print(f"  🧪 [TEST] {text}")
         return True
 
-    for attempt in range(retries):
-        try:
-            resp = client.create_tweet(text=text)
-            print(f"  ✅ Tweeted: {text}")
-            print(f"  🔗 https://x.com/i/status/{resp.data['id']}")
-            return True
-
-        except tweepy.TweepyException as exc:
-            err_str = str(exc)
-
-            # Transient server errors — worth retrying
-            if any(code in err_str for code in ("503", "500", "502", "504")):
-                wait = 5 * (attempt + 1)
-                if attempt < retries - 1:
-                    print(f"  ⚠️  Twitter {err_str[:40]} — retry {attempt+1}/{retries} in {wait}s…")
-                    time.sleep(wait)
-                    continue
-                else:
-                    print(f"  ❌ Twitter still unavailable after {retries} attempts. Will retry next run.")
-                    return False  # State NOT marked done — bot retries next cron
-
-            # Duplicate tweet — treat as success (tweet already exists)
-            if "duplicate" in err_str.lower() or "187" in err_str:
-                print(f"  ⚠️  Duplicate tweet detected — marking as sent.")
-                return True
-
-            # Rate limit — don't retry now, let next cron handle it
-            if "429" in err_str or "rate limit" in err_str.lower():
-                print(f"  ⚠️  Rate limited by Twitter. Will retry next run.")
-                return False
-
-            # Any other error — log and don't mark as sent
-            print(f"  ❌ Tweet error: {exc}")
-            return False
-
-    return False
+    success = asyncio.run(_post_async(text))
+    if not success:
+        print("  ❌ Post failed — will retry next cron run.")
+    return success
 
 
 # ── Decision Engine ───────────────────────────────────────────────────────────
