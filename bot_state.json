@@ -1,0 +1,13 @@
+{
+  "tournament": null,
+  "round": null,
+  "thru": null,
+  "today_score": null,
+  "total_score": null,
+  "position": null,
+  "missed_cut": false,
+  "tee_time_tweeted_round": null,
+  "round_finish_tweeted": null,
+  "last_hole_milestone": null,
+  "last_alert_hole": null
+}
