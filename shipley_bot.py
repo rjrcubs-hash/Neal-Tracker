@@ -44,13 +44,14 @@ _twikit: TwikitClient | None = None
 
 async def _get_twikit() -> TwikitClient | None:
     """
-    Loads twikit session from cookies and spoofs a real Chrome browser
-    fingerprint to avoid X's 226 anti-automation detection.
+    Loads twikit session from cookies and applies the full X web app
+    header fingerprint to pass X's 226 anti-automation check.
 
-    X's code 226 fires when the HTTP request looks like it came from a
-    non-browser client. We override the User-Agent and key headers on
-    twikit's underlying httpx session to match a real Chrome on Windows
-    request — the same environment the cookies were generated from.
+    X validates:
+      1. User-Agent looks like a real browser
+      2. x-csrf-token matches the ct0 cookie value exactly
+      3. X-internal headers (auth-type, active-user, client-language)
+      4. Authorization Bearer token matches the public web app token
     """
     global _twikit
     if _twikit is not None:
@@ -59,7 +60,7 @@ async def _get_twikit() -> TwikitClient | None:
     client = TwikitClient("en-US")
 
     if not Path(COOKIES_FILE).exists():
-        print(f"  ❌ {COOKIES_FILE} not found in repo.")
+        print(f"  ❌ {COOKIES_FILE} not found.")
         print(f"  → Run convert_cookies.py locally and commit the file.")
         return None
 
@@ -68,38 +69,70 @@ async def _get_twikit() -> TwikitClient | None:
         print("  🍪 twikit: cookies loaded.")
     except Exception as e:
         print(f"  ❌ Cookie load failed [{type(e).__name__}]: {repr(e)}")
-        print(f"  → Run convert_cookies.py locally and re-commit {COOKIES_FILE}.")
         return None
 
-    # ── Spoof a real Chrome on Windows browser fingerprint ────────────────────
-    # X's Cloudflare + internal bot detection checks User-Agent and several
-    # headers. GitHub Actions runners send Python/httpx defaults which are
-    # trivially detected. Overriding these makes requests indistinguishable
-    # from a real Chrome browser session.
-    browser_headers = {
+    # ── Extract ct0 (CSRF token) from the loaded cookies ─────────────────────
+    # x-csrf-token MUST match ct0 cookie value or X rejects with 403/226.
+    ct0 = None
+    try:
+        # twikit stores cookies on the underlying httpx client
+        for cookie in client.http.cookies.jar:
+            if cookie.name == "ct0":
+                ct0 = cookie.value
+                break
+        # Fallback: read directly from the JSON file
+        if not ct0:
+            raw = json.loads(Path(COOKIES_FILE).read_text())
+            ct0 = raw.get("ct0") or next(
+                (v for k, v in raw.items() if k == "ct0"), None
+            )
+    except Exception:
+        pass
+
+    if ct0:
+        print(f"  🔑 ct0 CSRF token found ({ct0[:8]}…)")
+    else:
+        print("  ⚠️  ct0 cookie not found — 226 errors likely. Re-export cookies.")
+
+    # ── Full X web app header set ─────────────────────────────────────────────
+    # Captured from a real Chrome session on x.com. Every field matters.
+    # Public bearer token is the same for all x.com web sessions.
+    BEARER = (
+        "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I%2BxMEUtS8%3D"
+    )
+
+    headers = {
+        # Browser identity
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/122.0.0.0 Safari/537.36"
         ),
+        "Accept":           "*/*",
         "Accept-Language":  "en-US,en;q=0.9",
         "Accept-Encoding":  "gzip, deflate, br",
-        "Accept":           "*/*",
-        "Sec-Ch-Ua":        '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-        "Sec-Ch-Ua-Mobile": "?0",
+        # X-specific — these are what X's 226 check actually looks for
+        "Authorization":           f"Bearer {BEARER}",
+        "x-twitter-auth-type":     "OAuth2Session",
+        "x-twitter-active-user":   "yes",
+        "x-twitter-client-language": "en",
+        "x-csrf-token":            ct0 or "",
+        # Fetch metadata
+        "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        "Sec-Ch-Ua-Mobile":   "?0",
         "Sec-Ch-Ua-Platform": '"Windows"',
-        "Sec-Fetch-Dest":   "empty",
-        "Sec-Fetch-Mode":   "cors",
-        "Sec-Fetch-Site":   "same-origin",
+        "Sec-Fetch-Dest":     "empty",
+        "Sec-Fetch-Mode":     "cors",
+        "Sec-Fetch-Site":     "same-origin",
+        "Origin":             "https://x.com",
+        "Referer":            "https://x.com/home",
     }
 
-    # twikit uses httpx internally — update headers on the underlying client
     try:
-        client.http.headers.update(browser_headers)
-        print("  🌐 twikit: browser headers applied.")
+        client.http.headers.update(headers)
+        print("  🌐 twikit: full X web app headers applied.")
     except Exception as e:
-        # Non-fatal — headers may already be set or client structure differs
-        print(f"  ⚠️  Could not set browser headers ({e}) — continuing anyway.")
+        print(f"  ⚠️  Header update failed ({e})")
 
     _twikit = client
     return _twikit
