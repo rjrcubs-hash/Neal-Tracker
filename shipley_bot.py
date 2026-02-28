@@ -25,7 +25,6 @@ from pathlib import Path
 import pytz
 import requests
 from twikit import Client as TwikitClient
-from twikit.errors import Forbidden, Unauthorized
 
 # ── Credentials ───────────────────────────────────────────────────────────────
 TWITTER_USERNAME = os.environ.get("TWITTER_USERNAME")   # e.g. NealShipleyTrak
@@ -92,7 +91,11 @@ async def _get_twikit() -> TwikitClient | None:
 
 async def _post_async(text: str) -> bool:
     """
-    Core async post. Handles expired cookies with one automatic re-auth retry.
+    Core async post.
+    - Logs full exception type + message so blank errors are diagnosable.
+    - On ANY failure, wipes cookies and retries once with a fresh login.
+      (Not just Unauthorized/Forbidden — twikit raises various types on
+      stale sessions depending on version.)
     """
     client = await _get_twikit()
     if client is None:
@@ -104,15 +107,20 @@ async def _post_async(text: str) -> bool:
         print(f"  🔗 https://x.com/i/status/{tweet.id}")
         return True
 
-    except (Unauthorized, Forbidden) as e:
-        # Session expired — wipe cookies and try a fresh login once
-        print(f"  ⚠️  Session expired ({e}) — clearing cookies and retrying.")
+    except Exception as e:
+        # Log type AND repr so blank-message exceptions are visible
+        print(f"  ⚠️  twikit error [{type(e).__name__}]: {repr(e)}")
+        print(f"  🔄 Clearing cookies and retrying with fresh login…")
+
+        # Wipe stale session regardless of error type
         global _twikit
         _twikit = None
         Path(COOKIES_FILE).unlink(missing_ok=True)
 
+        # Re-authenticate and retry once
         client = await _get_twikit()
         if client is None:
+            print(f"  ❌ Re-auth failed — no client.")
             return False
         try:
             tweet = await client.create_tweet(text=text)
@@ -120,12 +128,8 @@ async def _post_async(text: str) -> bool:
             print(f"  🔗 https://x.com/i/status/{tweet.id}")
             return True
         except Exception as e2:
-            print(f"  ❌ Post failed after re-auth: {e2}")
+            print(f"  ❌ Post failed after re-auth [{type(e2).__name__}]: {repr(e2)}")
             return False
-
-    except Exception as e:
-        print(f"  ❌ twikit post error: {e}")
-        return False
 
 # ── Default State Schema ──────────────────────────────────────────────────────
 DEFAULT_STATE: dict = {
