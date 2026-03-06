@@ -1,8 +1,8 @@
 {
   "tournament": "Arnold Palmer Invitational pres. by Mastercard",
   "round": 2,
-  "thru": 1,
-  "today_score": 0,
+  "thru": 4,
+  "today_score": -1,
   "total_score": 4,
   "position": "",
   "missed_cut": true,
