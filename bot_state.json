@@ -1,13 +1,13 @@
 {
   "tournament": "Arnold Palmer Invitational pres. by Mastercard",
-  "round": 1,
-  "thru": 18,
-  "today_score": 4,
+  "round": 2,
+  "thru": 1,
+  "today_score": 0,
   "total_score": 4,
   "position": "",
   "missed_cut": true,
   "tee_time_tweeted_round": null,
   "round_finish_tweeted": 1,
-  "last_hole_milestone": 18,
+  "last_hole_milestone": null,
   "last_alert_hole": null
 }
