@@ -1,8 +1,8 @@
 {
   "tournament": "Truist Championship",
   "round": 3,
-  "thru": 2,
-  "today_score": 0,
+  "thru": 7,
+  "today_score": -1,
   "total_score": -2,
   "position": "",
   "missed_cut": false,
