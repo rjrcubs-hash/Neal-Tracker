@@ -1,8 +1,8 @@
 {
   "tournament": "RBC Canadian Open",
   "round": 3,
-  "thru": null,
-  "today_score": null,
+  "thru": 13,
+  "today_score": -3,
   "total_score": -2,
   "position": "",
   "missed_cut": false,
