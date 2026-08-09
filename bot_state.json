@@ -1,8 +1,8 @@
 {
   "tournament": "Wyndham Championship",
   "round": 4,
-  "thru": 9,
-  "today_score": 0,
+  "thru": 12,
+  "today_score": -1,
   "total_score": -5,
   "position": "",
   "missed_cut": false,
